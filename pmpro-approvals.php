@@ -248,6 +248,18 @@ class PMPro_Approvals {
 	}	
 
 	/**
+	 * Check if a level requires ANY prior approval
+	 */
+	public static function requiresAnyPriorApproval( $level_id = NULL ) {
+		//no level?
+		if(empty($level_id))
+			return false;
+		
+		$options = PMPro_Approvals::getOptions($level_id);
+		return $options['requires_approval'] && $options['restrict_checkout'] == -1;
+	}	
+
+	/**
 	* Load check box to make level require membership.
 	* Fires on pmpro_membership_level_after_other_settings
 	*/
@@ -264,10 +276,12 @@ class PMPro_Approvals {
 			$approval_setting = 0;
 		elseif($options['requires_approval'] && !$options['restrict_checkout'])
 			$approval_setting = 1;
-		elseif(!$options['requires_approval'] && $options['restrict_checkout'])
+		elseif(!$options['requires_approval'] && $options['restrict_checkout'] && $options['restrict_checkout'] > 0)
 			$approval_setting = 2;
-		else
+		elseif($options['requires_approval'] && $options['restrict_checkout'] && $options['restrict_checkout'] > 0)
 			$approval_setting = 3;
+		else
+			$approval_setting = 4;
 		
 		//get all levels for which level option
 		$levels = pmpro_getAllLevels(true, true);
@@ -286,6 +300,7 @@ class PMPro_Approvals {
 						<?php if(!empty($levels)) { ?>
 							<option value="2" <?php selected($approval_setting, 2);?>><?php _e('Yes. User must have an approved membership for a different level.', 'pmpro-approvals');?></option>
 							<option value="3" <?php selected($approval_setting, 3);?>><?php _e('Yes. User must have an approved membership for a different level AND admin must approve new members for this level.', 'pmpro-approvals');?></option>
+							<option value="4" <?php selected($approval_setting, 4);?>><?php _e('Yes. User must have any approved membership for any other level OR admin must approve new members for this level.', 'pmpro-approvals');?></option>
 						<?php } ?>
 					</select>								
 				</td>
@@ -294,7 +309,8 @@ class PMPro_Approvals {
 			<tr <?php if($approval_setting < 2) {?>style="display: none;"<?php } ?>>
 				<th scope="row" valign="top"><label for="approval_restrict_level"><?php _e( 'Which Level?', 'pmpro-approvals' );?></label></th>
 				<td>
-					<select id="approval_restrict_level" name="approval_restrict_level">					
+					<select id="approval_restrict_level" name="approval_restrict_level">
+										
 					<?php						
 						foreach($levels as $level) {
 							?>
@@ -356,6 +372,9 @@ class PMPro_Approvals {
 		} elseif($approval_setting == 3) {
 			$requires_approval = 1;
 			//restrict_checkout set correctly above from input, but check that a level was chosen			
+		} elseif($approval_setting == 4) {
+			$requires_approval = 1;
+			$restrict_checkout = -1;
 		} else {
 			//assume 0, all off
 			$requires_approval = 0;
@@ -455,8 +474,11 @@ class PMPro_Approvals {
 		if($options['restrict_checkout']) {
 			$other_level = pmpro_getLevel($options['restrict_checkout']);
 			
+			//check if the restriction is just for ANY other approval 
+			if($options['restrict_checkout'] == -1) {
+				//don't actually have to show any messages, the verification will happen later during checkout, just want to avoid showing a failure message
 			//check that they are approved and not denied for that other level
-			if(PMPro_Approvals::isDenied(NULL, $options['restrict_checkout'])) {				
+			} elseif(PMPro_Approvals::isDenied(NULL, $options['restrict_checkout'])) {				
 				pmpro_setMessage(sprintf(__('Since your application to the %s level has been denied, you may not check out for this level.', 'pmpro-approvals'), $other_level->name), 'pmpro_error');
 			} elseif(PMPro_Approvals::isPending(NULL, $options['restrict_checkout'])) {
 				//note we use pmpro_getMembershipLevelForUser instead of pmpro_hasMembershipLevel because the latter is filtered
@@ -874,7 +896,7 @@ class PMPro_Approvals {
 	}
 
 	/**
-	 * Set approval status to pending for new members
+	 * Set approval status to pending for new members or approved if previously approved and the level permits that
 	 */
 	public static function pmpro_before_change_membership_level( $level_id, $user_id ) {
 				
@@ -895,6 +917,18 @@ class PMPro_Approvals {
 		if(pmpro_hasMembershipLevel($level_id, $user_id))
 			return;
 		
+		//if this level only requires any other previous approval, automatically approve
+		//getUserApprovalStatuses
+		if( PMPro_Approvals::requiresAnyPriorApproval( $level_id ) ) {
+			$userApprovalStatuses = PMPro_Approvals::getUserApprovalStatuses( NULL, true );
+			foreach( $userApprovalStatuses as $levelApproval ) {
+				if ( $levelApproval == "approved" ) {
+					//something is approved, so we can set this one to approved
+					update_user_meta($user_id, 'pmpro_approval_' . $level_id, array('status'=>'approved', 'timestamp'=>current_time('timestamp'), 'who' => $current_user->ID, 'approver'=>$current_user->user_login));
+					return;
+				}
+			}
+		}
 		//else, we need to set their status to pending
 		update_user_meta($user_id, "pmpro_approval_" . $level_id, array('status'=>'pending', 'timestamp'=>current_time('timestamp'), 'who' => '', 'approver'=>''));
 	}
